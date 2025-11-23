@@ -1,4 +1,4 @@
-import express from 'express';
+import express, { Request, Response } from 'express';
 import { prepare } from '../database.js';
 import { searchFood, getFoodDetails } from '../services/nutritionAPI.js';
 

@@ -1,4 +1,4 @@
-import express from 'express';
+import express, { Request, Response } from 'express';
 import cors from 'cors';
 import { initDatabase } from './database.js';
 import foodRoutes from './routes/food.js';
@@ -21,7 +21,7 @@ app.use('/api/nutrition', nutritionRoutes);
 app.use('/api/blood-sugar', bloodSugarRoutes);
 app.use('/api/correlation', correlationRoutes);
 
-app.get('/api/health', (req, res) => {
+app.get('/api/health', (req: Request, res: Response) => {
   res.json({ status: 'ok' });
 });
 
