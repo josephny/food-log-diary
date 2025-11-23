@@ -2,12 +2,27 @@ import Database from 'better-sqlite3';
 import pg from 'pg';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { existsSync, mkdirSync } from 'fs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Check if we're using PostgreSQL (cloud) or SQLite (local)
 const DATABASE_URL = process.env.DATABASE_URL;
+const NODE_ENV = process.env.NODE_ENV || 'development';
+const IS_RENDER = !!process.env.RENDER; // Render sets this automatically
+
+// In production or on Render, require DATABASE_URL
+if ((NODE_ENV === 'production' || IS_RENDER) && !DATABASE_URL) {
+  console.error('========================================');
+  console.error('ERROR: DATABASE_URL environment variable is required!');
+  console.error('Please set DATABASE_URL in your Render environment variables.');
+  console.error('Current NODE_ENV:', NODE_ENV);
+  console.error('Current DATABASE_URL:', DATABASE_URL ? 'SET' : 'NOT SET');
+  console.error('========================================');
+  process.exit(1);
+}
+
 const USE_POSTGRES = !!DATABASE_URL;
 
 let db: any;
@@ -16,14 +31,24 @@ let pgPool: pg.Pool | null = null;
 // Initialize database connection
 if (USE_POSTGRES) {
   // PostgreSQL (cloud deployment)
+  console.log('Connecting to PostgreSQL database...');
+  console.log('DATABASE_URL:', DATABASE_URL ? 'Set' : 'NOT SET');
   pgPool = new pg.Pool({
     connectionString: DATABASE_URL,
-    ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+    ssl: NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
   });
   console.log('Using PostgreSQL database');
 } else {
   // SQLite (local development)
-  db = new Database(path.join(__dirname, '../data/food_log.db'));
+  const dataDir = path.join(__dirname, '../data');
+  const dbPath = path.join(dataDir, 'food_log.db');
+  
+  // Create data directory if it doesn't exist (for local development)
+  if (!existsSync(dataDir)) {
+    mkdirSync(dataDir, { recursive: true });
+  }
+  
+  db = new Database(dbPath);
   console.log('Using SQLite database');
 }
 
