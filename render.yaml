@@ -1,0 +1,42 @@
+services:
+  - type: web
+    name: food-log-backend
+    env: node
+    buildCommand: cd server && npm install && npm run build
+    startCommand: cd server && npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3001
+      - key: DATABASE_URL
+        fromDatabase:
+          name: food-log-db
+          property: connectionString
+      - key: USDA_API_KEY
+        sync: false  # Set this in Render dashboard
+    healthCheckPath: /api/health
+
+  - type: web
+    name: food-log-frontend
+    env: node
+    buildCommand: cd client && npm install && npm run build
+    staticPublishPath: ./client/dist
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    envVars:
+      - key: VITE_API_URL
+        fromService:
+          name: food-log-backend
+          type: web
+          property: host
+
+databases:
+  - name: food-log-db
+    databaseName: food_log
+    user: food_log_user
+    plan: free
+
+
