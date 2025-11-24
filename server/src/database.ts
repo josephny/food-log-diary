@@ -1,216 +1,168 @@
-import Database from 'better-sqlite3';
 import pg from 'pg';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import { existsSync, mkdirSync } from 'fs';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const { Pool } = pg;
 
-// Check if we're using PostgreSQL (cloud) or SQLite (local)
 const DATABASE_URL = process.env.DATABASE_URL;
 const NODE_ENV = process.env.NODE_ENV || 'development';
-const IS_RENDER = !!process.env.RENDER; // Render sets this automatically
 
-// In production or on Render, require DATABASE_URL
-if ((NODE_ENV === 'production' || IS_RENDER) && !DATABASE_URL) {
-  console.error('========================================');
-  console.error('ERROR: DATABASE_URL environment variable is required!');
-  console.error('Please set DATABASE_URL in your Render environment variables.');
-  console.error('Current NODE_ENV:', NODE_ENV);
-  console.error('Current DATABASE_URL:', DATABASE_URL ? 'SET' : 'NOT SET');
-  console.error('========================================');
-  process.exit(1);
+// We are Postgres-only now: DATABASE_URL is required
+if (!DATABASE_URL) {
+  throw new Error(
+    'DATABASE_URL environment variable is required (PostgreSQL only setup).'
+  );
 }
 
-const USE_POSTGRES = !!DATABASE_URL;
+// In many hosted environments (Render, etc.) you need SSL but with relaxed certs.
+// For local Postgres (localhost), you usually want ssl: false.
+// This tries to do the reasonable thing by default.
+const useSSL =
+  !DATABASE_URL.includes('localhost') &&
+  !DATABASE_URL.includes('127.0.0.1') &&
+  NODE_ENV === 'production';
 
-let db: any;
-let pgPool: pg.Pool | null = null;
+export const pool = new Pool({
+  connectionString: DATABASE_URL,
+  ssl: useSSL ? { rejectUnauthorized: false } : false
+});
 
-// Initialize database connection
-if (USE_POSTGRES) {
-  // PostgreSQL (cloud deployment)
-  console.log('Connecting to PostgreSQL database...');
-  console.log('DATABASE_URL:', DATABASE_URL ? 'Set' : 'NOT SET');
-  pgPool = new pg.Pool({
-    connectionString: DATABASE_URL,
-    ssl: NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
-  });
-  console.log('Using PostgreSQL database');
-} else {
-  // SQLite (local development)
-  const dataDir = path.join(__dirname, '../data');
-  const dbPath = path.join(dataDir, 'food_log.db');
-  
-  // Create data directory if it doesn't exist (for local development)
-  if (!existsSync(dataDir)) {
-    mkdirSync(dataDir, { recursive: true });
+/**
+ * Run arbitrary SQL (optionally with parameters).
+ * Good for schema / migration / maintenance calls.
+ */
+export async function exec(
+  text: string,
+  params: any[] = []
+): Promise<pg.QueryResult> {
+  return pool.query(text, params);
+}
+
+/**
+ * Prepared query wrapper that mimics the better-sqlite3 style used in your routes:
+ *   const stmt = prepare('SELECT * FROM foo WHERE id = $1');
+ *   const rows = await stmt.all([id]);
+ *   const row = await stmt.get([id]);
+ *   await stmt.run([id]);
+ */
+export function prepare(text: string) {
+  return {
+    /**
+     * Return all rows
+     */
+    async all(params: any[] = []): Promise<any[]> {
+      const result = await pool.query(text, params);
+      return result.rows;
+    },
+
+    /**
+     * Return a single row (or null if none)
+     */
+    async get(params: any[] = []): Promise<any | null> {
+      const result = await pool.query(text, params);
+      return result.rows[0] ?? null;
+    },
+
+    /**
+     * Execute a statement where you don't care about returning rows
+     * (INSERT/UPDATE/DELETE, DDL, etc.)
+     */
+    async run(params: any[] = []): Promise<pg.QueryResult> {
+      return pool.query(text, params);
+    }
+  };
+}
+
+/**
+ * Initialize database schema.
+ *
+ * NOTE: This schema is inferred from your code and may need
+ * small tweaks if your route SQL expects different column names.
+ */
+export async function initDatabase(): Promise<void> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // Basic schema inferred from the routes (food, nutrition, blood sugar, correlations).
+    // Adjust column names / types if your existing SQL (in routes) expects something else.
+    const createTables = `
+      -- Stores USDA-style per-100g nutrition info for foods
+      CREATE TABLE IF NOT EXISTS nutrition_details (
+        id SERIAL PRIMARY KEY,
+        fdc_id INTEGER,
+        description TEXT NOT NULL,
+        brand_owner TEXT,
+        calories REAL,
+        protein REAL,
+        carbs REAL,
+        fat REAL,
+        fiber REAL,
+        sugar REAL,
+        sodium REAL,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+
+      -- One logical food entry (a “logged item” on a given date/time)
+      CREATE TABLE IF NOT EXISTS food_entries (
+        id SERIAL PRIMARY KEY,
+        date DATE NOT NULL,
+        time TIME WITHOUT TIME ZONE,
+        description TEXT,
+        amount REAL,           -- typically grams or serving size value
+        unit TEXT,             -- "g", "serving", etc.
+        notes TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+
+      -- Link table between entries and nutrition_details
+      -- (so a single entry can be associated with one or more USDA items)
+      CREATE TABLE IF NOT EXISTS food_entry_links (
+        id SERIAL PRIMARY KEY,
+        entry_id INTEGER NOT NULL REFERENCES food_entries(id) ON DELETE CASCADE,
+        nutrition_id INTEGER NOT NULL REFERENCES nutrition_details(id) ON DELETE CASCADE
+      );
+
+      -- Blood sugar readings
+      CREATE TABLE IF NOT EXISTS blood_sugar_readings (
+        id SERIAL PRIMARY KEY,
+        date DATE NOT NULL,
+        timestamp TIMESTAMPTZ NOT NULL,
+        reading REAL NOT NULL,
+        notes TEXT
+      );
+
+      -- Indexes (these match the ones that were at the bottom of your old file)
+      CREATE INDEX IF NOT EXISTS idx_food_entries_date
+        ON food_entries(date);
+
+      CREATE INDEX IF NOT EXISTS idx_food_entry_links_entry_id
+        ON food_entry_links(entry_id);
+
+      CREATE INDEX IF NOT EXISTS idx_blood_sugar_date
+        ON blood_sugar_readings(date);
+
+      CREATE INDEX IF NOT EXISTS idx_blood_sugar_timestamp
+        ON blood_sugar_readings(timestamp);
+    `;
+
+    await client.query(createTables);
+
+    await client.query('COMMIT');
+    console.log('Database initialized (PostgreSQL).');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Error initializing database:', err);
+    throw err;
+  } finally {
+    client.release();
   }
-  
-  db = new Database(dbPath);
-  console.log('Using SQLite database');
 }
 
-// Prepare statement helper - returns async methods for both databases
-export function prepare(text: string): any {
-  if (USE_POSTGRES && pgPool) {
-    return {
-      get: async (params?: any[]) => {
-        const result = await pgPool!.query(text, params || []);
-        return result.rows[0] || null;
-      },
-      all: async (params?: any[]) => {
-        const result = await pgPool!.query(text, params || []);
-        return result.rows;
-      },
-      run: async (params?: any[]) => {
-        const result = await pgPool!.query(text, params || []);
-        // For INSERT with RETURNING, get the id from the returned row
-        if (text.includes('RETURNING') && result.rows[0]) {
-          return { lastInsertRowid: result.rows[0].id };
-        }
-        // For regular INSERT, try to get id from result
-        return { lastInsertRowid: result.rows[0]?.id || null };
-      }
-    };
-  } else {
-    // SQLite - wrap in async for consistency
-    const stmt = db.prepare(text);
-    return {
-      get: async (params?: any[]) => {
-        return stmt.get(...(params || []));
-      },
-      all: async (params?: any[]) => {
-        return stmt.all(...(params || []));
-      },
-      run: async (params?: any[]) => {
-        const info = stmt.run(...(params || []));
-        return { lastInsertRowid: info.lastInsertRowid };
-      }
-    };
-  }
-}
-
-// Execute SQL (for CREATE TABLE, etc.)
-export async function exec(sql: string): Promise<void> {
-  if (USE_POSTGRES && pgPool) {
-    await pgPool.query(sql);
-  } else {
-    db.exec(sql);
-  }
-}
-
-export async function initDatabase() {
-  // Convert SQLite syntax to PostgreSQL-compatible
-  const createTables = USE_POSTGRES ? `
-    -- Food entries table
-    CREATE TABLE IF NOT EXISTS food_entries (
-      id SERIAL PRIMARY KEY,
-      food_name TEXT NOT NULL,
-      amount REAL NOT NULL,
-      unit TEXT NOT NULL,
-      date TEXT NOT NULL,
-      meal_type TEXT,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-
-    -- Nutrition data table (cached from API)
-    CREATE TABLE IF NOT EXISTS nutrition_data (
-      id SERIAL PRIMARY KEY,
-      fdc_id INTEGER UNIQUE,
-      food_name TEXT NOT NULL,
-      calories REAL,
-      protein REAL,
-      carbs REAL,
-      fat REAL,
-      fiber REAL,
-      sugar REAL,
-      sodium REAL,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-
-    -- Food entry nutrition link
-    CREATE TABLE IF NOT EXISTS entry_nutrition (
-      entry_id INTEGER REFERENCES food_entries(id) ON DELETE CASCADE,
-      nutrition_id INTEGER REFERENCES nutrition_data(id) ON DELETE CASCADE,
-      amount REAL
-    );
-
-    -- Blood sugar readings
-    CREATE TABLE IF NOT EXISTS blood_sugar_readings (
-      id SERIAL PRIMARY KEY,
-      reading REAL NOT NULL,
-      timestamp TEXT NOT NULL,
-      date TEXT NOT NULL,
-      time TEXT NOT NULL,
-      notes TEXT,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-
-    -- Create indexes
-    CREATE INDEX IF NOT EXISTS idx_food_entries_date ON food_entries(date);
-    CREATE INDEX IF NOT EXISTS idx_blood_sugar_date ON blood_sugar_readings(date);
-    CREATE INDEX IF NOT EXISTS idx_blood_sugar_timestamp ON blood_sugar_readings(timestamp);
-  ` : `
-    -- Food entries table
-    CREATE TABLE IF NOT EXISTS food_entries (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      food_name TEXT NOT NULL,
-      amount REAL NOT NULL,
-      unit TEXT NOT NULL,
-      date TEXT NOT NULL,
-      meal_type TEXT,
-      created_at TEXT DEFAULT CURRENT_TIMESTAMP
-    );
-
-    -- Nutrition data table (cached from API)
-    CREATE TABLE IF NOT EXISTS nutrition_data (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      fdc_id INTEGER UNIQUE,
-      food_name TEXT NOT NULL,
-      calories REAL,
-      protein REAL,
-      carbs REAL,
-      fat REAL,
-      fiber REAL,
-      sugar REAL,
-      sodium REAL,
-      created_at TEXT DEFAULT CURRENT_TIMESTAMP
-    );
-
-    -- Food entry nutrition link
-    CREATE TABLE IF NOT EXISTS entry_nutrition (
-      entry_id INTEGER,
-      nutrition_id INTEGER,
-      amount REAL,
-      FOREIGN KEY (entry_id) REFERENCES food_entries(id),
-      FOREIGN KEY (nutrition_id) REFERENCES nutrition_data(id)
-    );
-
-    -- Blood sugar readings
-    CREATE TABLE IF NOT EXISTS blood_sugar_readings (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      reading REAL NOT NULL,
-      timestamp TEXT NOT NULL,
-      date TEXT NOT NULL,
-      time TEXT NOT NULL,
-      notes TEXT,
-      created_at TEXT DEFAULT CURRENT_TIMESTAMP
-    );
-
-    -- Create indexes
-    CREATE INDEX IF NOT EXISTS idx_food_entries_date ON food_entries(date);
-    CREATE INDEX IF NOT EXISTS idx_blood_sugar_date ON blood_sugar_readings(date);
-    CREATE INDEX IF NOT EXISTS idx_blood_sugar_timestamp ON blood_sugar_readings(timestamp);
-  `;
-
-  await exec(createTables);
-}
-
-// Export default for backward compatibility
+// Default export kept for backward compatibility if you ever did:
+//   import db from './database.js';
 export default {
-  prepare,
+  pool,
   exec,
+  prepare,
+  initDatabase,
   query: prepare
 };
