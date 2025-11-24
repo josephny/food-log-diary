@@ -25,9 +25,14 @@ router.post('/reading', async (req, res) => {
       ? [reading, timestamp, date, time, notes || null]
       : [reading, timestamp, date, time, notes || null];
 
-    const result = await prepare(query).run(params);
+    const result: any = await prepare(query).run(params);
 
-    res.json({ id: result.lastInsertRowid, success: true });
+    const newId = USE_POSTGRES
+      ? result.rows?.[0]?.id
+      : result.lastInsertRowid;
+
+    res.json({ id: newId, success: true });
+
   } catch (error: any) {
     console.error('Add reading error:', error);
     res.status(500).json({ error: error.message || 'Failed to add reading' });
