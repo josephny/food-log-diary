@@ -4,6 +4,7 @@
     "module": "ES2022",
     "lib": ["ES2022"],
     "moduleResolution": "node",
+    "types": ["node"],          // 👈 ADD THIS LINE
     "rootDir": "./src",
     "outDir": "./dist",
     "strict": false,
@@ -17,5 +18,3 @@
   "include": ["src/**/*"],
   "exclude": ["node_modules"]
 }
-
-
