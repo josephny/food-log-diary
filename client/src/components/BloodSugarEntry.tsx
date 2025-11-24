@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { format } from 'date-fns';
 import { bloodSugarAPI } from '../services/api';
+
 
 export default function BloodSugarEntry() {
   const [reading, setReading] = useState('');
