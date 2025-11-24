@@ -108,8 +108,14 @@ router.post('/entry', async (req, res) => {
       ? `INSERT INTO food_entries (food_name, amount, unit, date, meal_type) VALUES ($1, $2, $3, $4, $5) RETURNING id`
       : `INSERT INTO food_entries (food_name, amount, unit, date, meal_type) VALUES (?, ?, ?, ?, ?)`;
 
-    const result = await prepare(query).run(params);
-    const entryId = result.lastInsertRowid;
+    const result: any = await prepare(query).run(params);
+
+    // In Postgres, we use RETURNING id and get it from result.rows[0].id
+    // In old SQLite mode, we'd still use lastInsertRowid (kept for compatibility)
+    const entryId = USE_POSTGRES
+      ? result.rows?.[0]?.id
+      : result.lastInsertRowid;
+
 
     // Link nutrition data if provided
     if (nutritionId && entryId) {
