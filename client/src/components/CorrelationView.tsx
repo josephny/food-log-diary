@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
 import { format, subDays } from 'date-fns';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, BarChart, Bar } from 'recharts';
-import { correlationAPI, nutritionAPI } from '../services/api';
+import { correlationAPI } from '../services/api';
+
 
 export default function CorrelationView() {
   const [startDate, setStartDate] = useState(format(subDays(new Date(), 7), 'yyyy-MM-dd'));
