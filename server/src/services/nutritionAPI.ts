@@ -78,12 +78,23 @@ export async function getFoodDetails(fdcId: number): Promise<FoodDetails> {
       sugar: getNutrient(2000),
       sodium: getNutrient(1093)
     };
-  } catch (error: any) {
-    if (error.response?.status === 403 || error.response?.status === 401) {
-      throw new Error('Invalid or missing USDA API key. Please set USDA_API_KEY in .env file');
-    }
-    throw error;
+} catch (error: any) {
+  console.error("USDA food API error:", {
+    message: error.message,
+    name: error.name,
+    status: error.response?.status,
+    statusText: error.response?.statusText,
+    url: error.config?.url,
+    data: error.response?.data
+  });
+
+  if (error.response?.status === 401 || error.response?.status === 403) {
+    throw new Error("Invalid USDA API key. Add or correct USDA_API_KEY in backend environment.");
   }
+
+  throw new Error("USDA API error: " + error.message);
 }
+
+
 
 
