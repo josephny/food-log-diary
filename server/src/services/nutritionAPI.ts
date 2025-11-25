@@ -94,7 +94,7 @@ export async function getFoodDetails(fdcId: number): Promise<FoodDetails> {
 
   throw new Error("USDA API error: " + error.message);
 }
-
+}
 
 
 
